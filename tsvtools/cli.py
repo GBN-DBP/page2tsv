@@ -10,6 +10,7 @@ import click
 import pandas as pd
 import requests
 from lxml import etree as ET
+from urllib.parse import quote
 
 from ocrd_models.ocrd_page import parse
 from ocrd_utils import bbox_from_points
@@ -61,7 +62,7 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 @click.command()
 @click.argument('page-xml-file', type=click.Path(exists=True), required=True, nargs=1)
 @click.argument('tsv-out-file', type=click.Path(), required=True, nargs=1)
-@click.option('--purpose', type=click.Choice(['NERD', 'OCR'], case_sensitive=False), default="NERD",
+@click.option('--purpose', type=click.Choice(['fonts', 'skew'], case_sensitive=False), default="fonts",
               help="Purpose of output tsv file. "
                    "\n\nNERD: NER/NED application/ground-truth creation. "
                    "\n\nOCR: OCR application/ground-truth creation. "
@@ -79,14 +80,20 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 @click.option('--min-confidence', type=float, default=None)
 @click.option('--max-confidence', type=float, default=None)
 @click.option('--ned-priority', type=int, default=1)
+@click.option('--scheme', type=str, default='http')
+@click.option('--server', type=str, required=True)
+@click.option('--prefix', type=str, default='')
+@click.option('--segment-type', type=str, default='Page')
 def page2tsv(page_xml_file, tsv_out_file, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
-             noproxy, scale_factor, ned_threshold, min_confidence, max_confidence, ned_priority):
-    if purpose == "NERD":
-        out_columns = ['No.', 'TOKEN', 'NE-TAG', 'NE-EMB', 'ID', 'url_id', 'left', 'right', 'top', 'bottom', 'conf']
-    elif purpose == "OCR":
-        out_columns = ['TEXT', 'url_id', 'left', 'right', 'top', 'bottom', 'conf', 'line_id']
-        if min_confidence is not None and max_confidence is not None:
-            out_columns += ['ocrconf']
+             noproxy, scale_factor, ned_threshold, min_confidence, max_confidence, ned_priority, scheme, server,
+             prefix, segment_type):
+    if purpose == "fonts":
+        out_columns = [
+            'text_equiv', 'conf', 'language', 'font_family', 'font_size', 'bold', 'italic', 'letter_spaced',
+            'segment_type', 'segment_id', 'url_id', 'region', 'rotation'
+        ]
+    elif purpose == "skew":
+        out_columns = ['segment_type', 'segment_id', 'url_id', 'region', 'rotation']
     else:
         raise RuntimeError("Unknown purpose.")
 
@@ -100,97 +107,182 @@ def page2tsv(page_xml_file, tsv_out_file, purpose, image_url, ner_rest_endpoint,
     else:
         pd.DataFrame([], columns=out_columns).to_csv(tsv_out_file, sep="\t", quoting=3, index=False)
 
-    pcgts = parse(page_xml_file)
     tsv = []
-    line_info = []
 
-    for region_idx, region in enumerate(pcgts.get_Page().get_AllRegions(classes=['Text'], order='reading-order')):
-        for text_line in region.get_TextLine():
+    base_url = "scheme://server/prefix/identifier/region/size/rotation/quality.format"
 
-            left, top, right, bottom = [int(scale_factor * x) for x in bbox_from_points(text_line.get_Coords().points)]
+    base_url = re.sub('scheme', scheme, base_url)
+    base_url = re.sub('server', server, base_url)
 
-            if min_confidence is not None and max_confidence is not None:
-                conf = np.max([textequiv.conf for textequiv in text_line.get_TextEquiv()])
+    if prefix:
+        base_url = re.sub('prefix', prefix, base_url)
+    else:
+        base_url = re.sub('/prefix', '', base_url)
+
+    pcgts = parse(page_xml_file)
+    page = pcgts.get_Page()
+
+    image_url = re.sub('identifier', quote(page.get_imageFilename(), safe=''), base_url)
+
+    region = "full"
+    try:
+        rotation = page.get_orientation()
+    except:
+        rotation = 0.0
+
+    if segment_type == 'Page':
+        rotation = str(rotation % 360)
+
+        # segment_id = page.get_id()
+        segment_id = '-'
+        url_id = len(urls)
+
+        if purpose == 'skew':
+            tsv.append((segment_type, segment_id, url_id, region, rotation))
+    else:
+        segments = []
+
+        if 'Region' in segment_type:
+            for reg in page.get_AllRegions(classes=[re.sub('Region', '', segment_type)], order='reading-order'):
+                try:
+                    region_rotation = rotation + reg.get_orientation()
+                except:
+                    region_rotation = rotation
+                segments.append((reg, region_rotation))
+        else:
+            regions = page.get_AllRegions(classes=['Text'], order='reading-order')
+            lines = []
+            for reg in regions:
+                try:
+                    region_rotation = rotation + reg.get_orientation()
+                except:
+                    region_rotation = rotation
+                for line in reg.get_TextLine():
+                    try:
+                        line_rotation = region_rotation + line.get_orientation()
+                    except:
+                        line_rotation = region_rotation
+                    lines.append((line, line_rotation))
+            if segment_type == 'TextLine':
+                segments = lines
             else:
-                conf = np.nan
+                words = []
+                for line, line_rotation in lines:
+                    for word in line.get_Word():
+                        try:
+                            word_rotation = line_rotation + word.get_orientation()
+                        except:
+                            word_rotation = line_rotation
+                        words.append((word, word_rotation))
+                segments = words
 
-            line_info.append((len(urls), left, right, top, bottom, conf, text_line.id))
+        for segment, rotation in segments:
+            coords = segment.get_Coords()
+            x0, y0, x1, y1 = bbox_from_points(coords.points)
 
-            words = [word for word in text_line.get_Word()]
+            region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
+            rotation = str(rotation % 360)
 
-            if len(words) <= 0:
-                for text_equiv in text_line.get_TextEquiv():
-                    # transform OCR coordinates using `scale_factor` to derive
-                    # correct coordinates for the web presentation image
-                    left, top, right, bottom = [int(scale_factor * x) for x in
-                                                bbox_from_points(text_line.get_Coords().points)]
+            segment_id = segment.get_id()
+            url_id = len(urls)
 
-                    tsv.append((region_idx, len(line_info) - 1, left + (right - left) / 2.0,
-                                text_equiv.get_Unicode(), len(urls), left, right, top, bottom, text_line.id))
+            if purpose == 'fonts':
+                try:
+                    text_equivs = [
+                        (text_equiv.get_Unicode(), text_equiv.get_conf()) for text_equiv in segment.get_TextEquiv()
+                    ]
+
+                    try:
+                        language = segment.get_language()
+                        if not language:
+                            language = '-'
+                    except:
+                        language = '-'
+
+                    try:
+                        text_style = segment.get_TextStyle()
+
+                        try:
+                            font_family = text_style.get_fontFamily()
+                            if not font_family:
+                                font_family = '-'
+                        except:
+                            font_family = '-'
+
+                        try:
+                            font_size = text_style.get_fontSize()
+                            if not font_size:
+                                font_size = '-'
+                        except:
+                            font_size = '-'
+
+                        try:
+                            bold = text_style.get_bold()
+                            if not bold:
+                                bold = '-'
+                        except:
+                            bold = '-'
+
+                        try:
+                            italic = text_style.get_italic()
+                            if not italic:
+                                italic = '-'
+                        except:
+                            italic = '-'
+
+                        try:
+                            letter_spaced = text_style.get_letterSpaced()
+                            if not letter_spaced:
+                                letter_spaced = '-'
+                        except:
+                            letter_spaced = '-'
+                    except:
+                        font_family = '-'
+                        font_size = '-'
+                        bold = '-'
+                        italic = '-'
+                        letter_spaced = '-'
+
+                    for text_equiv, conf in text_equivs:
+                        tsv.append(
+                            (
+                                text_equiv,
+                                conf,
+                                language,
+                                font_family,
+                                font_size,
+                                bold,
+                                italic,
+                                letter_spaced,
+                                segment_type,
+                                segment_id,
+                                url_id,
+                                region,
+                                rotation
+                            )
+                        )
+                except:
+                    pass
             else:
-                for word in words:
+                tsv.append((segment_type, segment_id, url_id, region, rotation))
 
-                    for text_equiv in word.get_TextEquiv():
-                        # transform OCR coordinates using `scale_factor` to derive
-                        # correct coordinates for the web presentation image
-                        left, top, right, bottom = [int(scale_factor * x) for x in bbox_from_points(word.get_Coords().points)]
-
-                        tsv.append((region_idx, len(line_info) - 1, left + (right - left) / 2.0,
-                                    text_equiv.get_Unicode(), len(urls), left, right, top, bottom, text_line.id))
-
-    line_info = pd.DataFrame(line_info, columns=['url_id', 'left', 'right', 'top', 'bottom', 'conf', 'line_id'])
-
-    if min_confidence is not None and max_confidence is not None:
-        line_info['ocrconf'] = line_info.conf.map(lambda x: get_conf_color(x, min_confidence, max_confidence))
-
-    tsv = pd.DataFrame(tsv, columns=['rid', 'line', 'hcenter'] +
-                                    ['TEXT', 'url_id', 'left', 'right', 'top', 'bottom', 'line_id'])
+    tsv = pd.DataFrame(tsv, columns=out_columns)
 
     if len(tsv) == 0:
         return
 
     with open(tsv_out_file, 'a') as f:
+        # for url in urls:
+        #     f.write('# ' + url + '\n')
 
         f.write('# ' + image_url + '\n')
 
-    vlinecenter = pd.DataFrame(tsv[['line', 'top']].groupby('line', sort=False).mean().top +
-                               (tsv[['line', 'bottom']].groupby('line', sort=False).mean().bottom -
-                                tsv[['line', 'top']].groupby('line', sort=False).mean().top) / 2,
-                               columns=['vlinecenter'])
-
-    tsv = tsv.merge(vlinecenter, left_on='line', right_index=True)
-
-    regions = [region.sort_values(['vlinecenter', 'hcenter']) for rid, region in tsv.groupby('rid', sort=False)]
-
-    tsv = pd.concat(regions)
-
-    if purpose == 'NERD':
-
-        tsv['No.'] = 0
-        tsv['NE-TAG'] = 'O'
-        tsv['NE-EMB'] = 'O'
-        tsv['ID'] = '-'
-        tsv['conf'] = '-'
-
-        tsv = tsv.rename(columns={'TEXT': 'TOKEN'})
-    elif purpose == 'OCR':
-
-        tsv = pd.DataFrame([(line, " ".join(part.TEXT.to_list())) for line, part in tsv.groupby('line')],
-                           columns=['line', 'TEXT'])
-
-        tsv = tsv.merge(line_info, left_on='line', right_index=True)
+        # for row in data:
+        #     f.write(row)
 
     tsv = tsv[out_columns].reset_index(drop=True)
 
     try:
-        if purpose == 'NERD' and ner_rest_endpoint is not None:
-
-            tsv, ner_result = ner(tsv, ner_rest_endpoint)
-
-            if ned_rest_endpoint is not None:
-
-                tsv, _ = ned(tsv, ner_result, ned_rest_endpoint, threshold=ned_threshold, priority=ned_priority)
-
         tsv.to_csv(tsv_out_file, sep="\t", quoting=3, index=False, mode='a', header=False)
     except requests.HTTPError as e:
         print(e)
