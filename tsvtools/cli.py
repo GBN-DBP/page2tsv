@@ -12,7 +12,9 @@ import requests
 from lxml import etree as ET
 from urllib.parse import quote
 
+from ocrd_models.ocrd_mets import OcrdMets
 from ocrd_models.ocrd_page import parse
+from ocrd_modelfactory import page_from_file
 from ocrd_utils import bbox_from_points
 
 from .ned import ned
@@ -60,8 +62,10 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 
 
 @click.command()
-@click.argument('page-xml-file', type=click.Path(exists=True), required=True, nargs=1)
+# @click.argument('page-xml-file', type=click.Path(exists=True), required=True, nargs=1)
+@click.argument('mets-file', type=click.Path(exists=True), required=True, nargs=1)
 @click.argument('tsv-out-file', type=click.Path(), required=True, nargs=1)
+@click.option('--file-grp', type=str, required=True)
 @click.option('--purpose', type=click.Choice(['fonts', 'skew'], case_sensitive=False), default="fonts",
               help="Purpose of output tsv file. "
                    "\n\nNERD: NER/NED application/ground-truth creation. "
@@ -84,7 +88,8 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 @click.option('--server', type=str, required=True)
 @click.option('--prefix', type=str, default='')
 @click.option('--segment-type', type=str, default='Page')
-def page2tsv(page_xml_file, tsv_out_file, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
+# def page2tsv(page_xml_file, tsv_out_file, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
+def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
              noproxy, scale_factor, ned_threshold, min_confidence, max_confidence, ned_priority, scheme, server,
              prefix, segment_type):
     if purpose == "fonts":
@@ -101,11 +106,13 @@ def page2tsv(page_xml_file, tsv_out_file, purpose, image_url, ner_rest_endpoint,
         os.environ['no_proxy'] = '*'
 
     urls = []
-    if os.path.exists(tsv_out_file):
-        parts = extract_doc_links(tsv_out_file)
-        urls = [part['url'] for part in parts]
-    else:
-        pd.DataFrame([], columns=out_columns).to_csv(tsv_out_file, sep="\t", quoting=3, index=False)
+    # if os.path.exists(tsv_out_file):
+    #     parts = extract_doc_links(tsv_out_file)
+    #     urls = [part['url'] for part in parts]
+    # else:
+    #     pd.DataFrame([], columns=out_columns).to_csv(tsv_out_file, sep="\t", quoting=3, index=False)
+
+    pd.DataFrame([], columns=out_columns).to_csv(tsv_out_file, sep="\t", quoting=3, index=False)
 
     tsv = []
 
@@ -119,152 +126,161 @@ def page2tsv(page_xml_file, tsv_out_file, purpose, image_url, ner_rest_endpoint,
     else:
         base_url = re.sub('/prefix', '', base_url)
 
-    pcgts = parse(page_xml_file)
-    page = pcgts.get_Page()
+    mets = OcrdMets(filename=mets_file)
 
-    image_url = re.sub('identifier', quote(page.get_imageFilename(), safe=''), base_url)
+    basedir = Path(mets_file).parents[0]
 
-    region = "full"
-    try:
-        rotation = page.get_orientation()
-    except:
-        rotation = 0.0
+    for fl in mets.find_files(fileGrp=file_grp):
+        fl.local_filename = str(basedir / Path(fl.local_filename))
 
-    if segment_type == 'Page':
-        rotation = str(rotation % 360)
+        pcgts = page_from_file(fl)
+        page = pcgts.get_Page()
 
-        # segment_id = page.get_id()
-        segment_id = '-'
-        url_id = len(urls)
+        # pcgts = parse(page_xml_file)
+        # page = pcgts.get_Page()
 
-        if purpose == 'skew':
-            tsv.append((segment_type, segment_id, url_id, region, rotation))
-    else:
-        segments = []
+        urls.append(re.sub('identifier', quote(page.get_imageFilename(), safe=''), base_url))
+        # image_url = re.sub('identifier', quote(page.get_imageFilename(), safe=''), base_url)
 
-        if 'Region' in segment_type:
-            for reg in page.get_AllRegions(classes=[re.sub('Region', '', segment_type)], order='reading-order'):
-                try:
-                    region_rotation = rotation + reg.get_orientation()
-                except:
-                    region_rotation = rotation
-                segments.append((reg, region_rotation))
-        else:
-            regions = page.get_AllRegions(classes=['Text'], order='reading-order')
-            lines = []
-            for reg in regions:
-                try:
-                    region_rotation = rotation + reg.get_orientation()
-                except:
-                    region_rotation = rotation
-                for line in reg.get_TextLine():
-                    try:
-                        line_rotation = region_rotation + line.get_orientation()
-                    except:
-                        line_rotation = region_rotation
-                    lines.append((line, line_rotation))
-            if segment_type == 'TextLine':
-                segments = lines
-            else:
-                words = []
-                for line, line_rotation in lines:
-                    for word in line.get_Word():
-                        try:
-                            word_rotation = line_rotation + word.get_orientation()
-                        except:
-                            word_rotation = line_rotation
-                        words.append((word, word_rotation))
-                segments = words
+        region = "full"
+        try:
+            rotation = page.get_orientation()
+        except:
+            rotation = 0.0
 
-        for segment, rotation in segments:
-            coords = segment.get_Coords()
-            x0, y0, x1, y1 = bbox_from_points(coords.points)
+        page_id = fl.pageId
+        url_id = len(urls) - 1
 
-            region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
+        if segment_type == 'Page':
             rotation = str(rotation % 360)
 
-            segment_id = segment.get_id()
-            url_id = len(urls)
+            if purpose == 'skew':
+                tsv.append((segment_type, page_id, url_id, region, rotation))
+        else:
+            segments = []
 
-            if purpose == 'fonts':
-                try:
-                    text_equivs = [
-                        (text_equiv.get_Unicode(), text_equiv.get_conf()) for text_equiv in segment.get_TextEquiv()
-                    ]
-
+            if 'Region' in segment_type:
+                for reg in page.get_AllRegions(classes=[re.sub('Region', '', segment_type)], order='reading-order'):
                     try:
-                        language = segment.get_language()
-                        if not language:
-                            language = '-'
+                        region_rotation = rotation + reg.get_orientation()
                     except:
-                        language = '-'
-
+                        region_rotation = rotation
+                    segments.append((reg, region_rotation))
+            else:
+                regions = page.get_AllRegions(classes=['Text'], order='reading-order')
+                lines = []
+                for reg in regions:
                     try:
-                        text_style = segment.get_TextStyle()
+                        region_rotation = rotation + reg.get_orientation()
+                    except:
+                        region_rotation = rotation
+                    for line in reg.get_TextLine():
+                        try:
+                            line_rotation = region_rotation + line.get_orientation()
+                        except:
+                            line_rotation = region_rotation
+                        lines.append((line, line_rotation))
+                if segment_type == 'TextLine':
+                    segments = lines
+                else:
+                    words = []
+                    for line, line_rotation in lines:
+                        for word in line.get_Word():
+                            try:
+                                word_rotation = line_rotation + word.get_orientation()
+                            except:
+                                word_rotation = line_rotation
+                            words.append((word, word_rotation))
+                    segments = words
+
+            for segment, rotation in segments:
+                coords = segment.get_Coords()
+                x0, y0, x1, y1 = bbox_from_points(coords.points)
+
+                region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
+                rotation = str(rotation % 360)
+
+                segment_id = page_id + '_' + segment.get_id()
+
+                if purpose == 'fonts':
+                    try:
+                        text_equivs = [
+                            (text_equiv.get_Unicode(), text_equiv.get_conf()) for text_equiv in segment.get_TextEquiv()
+                        ]
 
                         try:
-                            font_family = text_style.get_fontFamily()
-                            if not font_family:
+                            language = segment.get_language()
+                            if not language:
+                                language = '-'
+                        except:
+                            language = '-'
+
+                        try:
+                            text_style = segment.get_TextStyle()
+
+                            try:
+                                font_family = text_style.get_fontFamily()
+                                if not font_family:
+                                    font_family = '-'
+                            except:
                                 font_family = '-'
-                        except:
-                            font_family = '-'
 
-                        try:
-                            font_size = text_style.get_fontSize()
-                            if not font_size:
+                            try:
+                                font_size = text_style.get_fontSize()
+                                if not font_size:
+                                    font_size = '-'
+                            except:
                                 font_size = '-'
-                        except:
-                            font_size = '-'
 
-                        try:
-                            bold = text_style.get_bold()
-                            if not bold:
+                            try:
+                                bold = text_style.get_bold()
+                                if not bold:
+                                    bold = '-'
+                            except:
                                 bold = '-'
-                        except:
-                            bold = '-'
 
-                        try:
-                            italic = text_style.get_italic()
-                            if not italic:
+                            try:
+                                italic = text_style.get_italic()
+                                if not italic:
+                                    italic = '-'
+                            except:
                                 italic = '-'
-                        except:
-                            italic = '-'
 
-                        try:
-                            letter_spaced = text_style.get_letterSpaced()
-                            if not letter_spaced:
+                            try:
+                                letter_spaced = text_style.get_letterSpaced()
+                                if not letter_spaced:
+                                    letter_spaced = '-'
+                            except:
                                 letter_spaced = '-'
                         except:
+                            font_family = '-'
+                            font_size = '-'
+                            bold = '-'
+                            italic = '-'
                             letter_spaced = '-'
-                    except:
-                        font_family = '-'
-                        font_size = '-'
-                        bold = '-'
-                        italic = '-'
-                        letter_spaced = '-'
 
-                    for text_equiv, conf in text_equivs:
-                        tsv.append(
-                            (
-                                text_equiv,
-                                conf,
-                                language,
-                                font_family,
-                                font_size,
-                                bold,
-                                italic,
-                                letter_spaced,
-                                segment_type,
-                                segment_id,
-                                url_id,
-                                region,
-                                rotation
+                        for text_equiv, conf in text_equivs:
+                            tsv.append(
+                                (
+                                    text_equiv,
+                                    conf,
+                                    language,
+                                    font_family,
+                                    font_size,
+                                    bold,
+                                    italic,
+                                    letter_spaced,
+                                    segment_type,
+                                    segment_id,
+                                    url_id,
+                                    region,
+                                    rotation
+                                )
                             )
-                        )
-                except:
-                    pass
-            else:
-                tsv.append((segment_type, segment_id, url_id, region, rotation))
+                    except:
+                        pass
+                else:
+                    tsv.append((segment_type, segment_id, url_id, region, rotation))
 
     tsv = pd.DataFrame(tsv, columns=out_columns)
 
@@ -272,13 +288,9 @@ def page2tsv(page_xml_file, tsv_out_file, purpose, image_url, ner_rest_endpoint,
         return
 
     with open(tsv_out_file, 'a') as f:
-        # for url in urls:
-        #     f.write('# ' + url + '\n')
-
-        f.write('# ' + image_url + '\n')
-
-        # for row in data:
-        #     f.write(row)
+        # f.write('# ' + image_url + '\n')
+        for url in urls:
+            f.write('# ' + url + '\n')
 
     tsv = tsv[out_columns].reset_index(drop=True)
 
