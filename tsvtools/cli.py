@@ -93,9 +93,13 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
              noproxy, scale_factor, ned_threshold, min_confidence, max_confidence, ned_priority, scheme, server,
              prefix, segment_type):
     if purpose == "fonts":
+        # out_columns = [
+        #     'text_equiv', 'conf', 'language', 'font_family', 'font_size', 'bold', 'italic', 'letter_spaced',
+        #     'segment_type', 'segment_id', 'url_id', 'region', 'rotation'
+        # ]
         out_columns = [
-            'text_equiv', 'conf', 'language', 'font_family', 'font_size', 'bold', 'italic', 'letter_spaced',
-            'segment_type', 'segment_id', 'url_id', 'region', 'rotation'
+            'text_equiv', 'language', 'font_family', 'segment_type', 'segment_id', 'url_id', 'region', 'rotation',
+            'full_region', 'full_rotation'
         ]
     elif purpose == "skew":
         out_columns = ['segment_type', 'segment_id', 'url_id', 'region', 'rotation']
@@ -105,16 +109,10 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
     if noproxy:
         os.environ['no_proxy'] = '*'
 
-    urls = []
-    # if os.path.exists(tsv_out_file):
-    #     parts = extract_doc_links(tsv_out_file)
-    #     urls = [part['url'] for part in parts]
-    # else:
-    #     pd.DataFrame([], columns=out_columns).to_csv(tsv_out_file, sep="\t", quoting=3, index=False)
-
     pd.DataFrame([], columns=out_columns).to_csv(tsv_out_file, sep="\t", quoting=3, index=False)
 
     tsv = []
+    urls = []
 
     base_url = "scheme://server/prefix/identifier/region/size/rotation/quality.format"
 
@@ -140,7 +138,6 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
         # page = pcgts.get_Page()
 
         urls.append(re.sub('identifier', quote(page.get_imageFilename(), safe=''), base_url))
-        # image_url = re.sub('identifier', quote(page.get_imageFilename(), safe=''), base_url)
 
         region = "full"
         try:
@@ -165,7 +162,7 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
                         region_rotation = rotation + reg.get_orientation()
                     except:
                         region_rotation = rotation
-                    segments.append((reg, region_rotation))
+                    segments.append((reg, region_rotation, page, rotation))
             else:
                 regions = page.get_AllRegions(classes=['Text'], order='reading-order')
                 lines = []
@@ -179,26 +176,32 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
                             line_rotation = region_rotation + line.get_orientation()
                         except:
                             line_rotation = region_rotation
-                        lines.append((line, line_rotation))
+                        lines.append((line, line_rotation, reg, region_rotation))
                 if segment_type == 'TextLine':
                     segments = lines
                 else:
                     words = []
-                    for line, line_rotation in lines:
+                    for line, line_rotation, reg, region_rotation in lines:
                         for word in line.get_Word():
                             try:
                                 word_rotation = line_rotation + word.get_orientation()
                             except:
                                 word_rotation = line_rotation
-                            words.append((word, word_rotation))
+                            words.append((word, word_rotation, reg, region_rotation))
                     segments = words
 
-            for segment, rotation in segments:
+            for segment, rotation, full, full_rotation in segments:
                 coords = segment.get_Coords()
                 x0, y0, x1, y1 = bbox_from_points(coords.points)
 
                 region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
                 rotation = str(rotation % 360)
+
+                full_coords = full.get_Coords()
+                x0, y0, x1, y1 = bbox_from_points(full_coords.points)
+
+                full_region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
+                full_rotation = str(full_rotation % 360)
 
                 segment_id = page_id + '_' + segment.get_id()
 
@@ -263,18 +266,20 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
                             tsv.append(
                                 (
                                     text_equiv,
-                                    conf,
+                                    # conf,
                                     language,
                                     font_family,
-                                    font_size,
-                                    bold,
-                                    italic,
-                                    letter_spaced,
+                                    # font_size,
+                                    # bold,
+                                    # italic,
+                                    # letter_spaced,
                                     segment_type,
                                     segment_id,
                                     url_id,
                                     region,
-                                    rotation
+                                    rotation,
+                                    full_region,
+                                    full_rotation
                                 )
                             )
                     except:
