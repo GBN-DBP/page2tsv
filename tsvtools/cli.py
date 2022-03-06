@@ -114,7 +114,8 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
     tsv = []
     urls = []
 
-    base_url = "scheme://server/prefix/identifier/region/size/rotation/quality.format"
+    # base_url = "scheme://server/prefix/identifier/region/size/rotation/quality.format"
+    base_url = "scheme://server/prefix/identifier"
 
     base_url = re.sub('scheme', scheme, base_url)
     base_url = re.sub('server', server, base_url)
