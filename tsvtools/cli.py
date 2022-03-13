@@ -84,9 +84,6 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 @click.option('--min-confidence', type=float, default=None)
 @click.option('--max-confidence', type=float, default=None)
 @click.option('--ned-priority', type=int, default=1)
-@click.option('--scheme', type=str, default='http')
-@click.option('--server', type=str, required=True)
-@click.option('--prefix', type=str, default='')
 @click.option('--segment-type', type=str, default='Page')
 # def page2tsv(page_xml_file, tsv_out_file, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
 def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
