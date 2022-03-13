@@ -89,17 +89,10 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
              noproxy, scale_factor, ned_threshold, min_confidence, max_confidence, ned_priority, scheme, server,
              prefix, segment_type):
-    if purpose == "fonts":
-        # out_columns = [
-        #     'text_equiv', 'conf', 'language', 'font_family', 'font_size', 'bold', 'italic', 'letter_spaced',
-        #     'segment_type', 'segment_id', 'url_id', 'region', 'rotation'
-        # ]
+    if purpose == "page-rotation":
         out_columns = [
-            'text_equiv', 'language', 'font_family', 'segment_type', 'segment_id', 'url_id', 'region', 'rotation',
-            'full_region', 'full_rotation'
+            'page_id', 'page_orientation', 'url_id'
         ]
-    elif purpose == "skew":
-        out_columns = ['segment_type', 'segment_id', 'url_id', 'region', 'rotation']
     else:
         raise RuntimeError("Unknown purpose.")
 
