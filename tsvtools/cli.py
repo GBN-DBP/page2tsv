@@ -66,7 +66,7 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 @click.argument('mets-file', type=click.Path(exists=True), required=True, nargs=1)
 @click.argument('tsv-out-file', type=click.Path(), required=True, nargs=1)
 @click.option('--file-grp', type=str, required=True)
-@click.option('--purpose', type=click.Choice(['fonts', 'skew'], case_sensitive=False), default="fonts",
+@click.option('--purpose', type=click.Choice(['page-rotation'], case_sensitive=False), default="page-rotation",
               help="Purpose of output tsv file. "
                    "\n\nNERD: NER/NED application/ground-truth creation. "
                    "\n\nOCR: OCR application/ground-truth creation. "
@@ -141,8 +141,8 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
         if segment_type == 'Page':
             rotation = str(rotation % 360)
 
-            if purpose == 'skew':
-                tsv.append((segment_type, page_id, url_id, region, rotation))
+            if purpose == 'page-rotation':
+                tsv.append((page_id, page_orientation, url_id))
         else:
             segments = []
 
@@ -195,87 +195,9 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
 
                 segment_id = page_id + '_' + segment.get_id()
 
-                if purpose == 'fonts':
-                    try:
-                        text_equivs = [
-                            (text_equiv.get_Unicode(), text_equiv.get_conf()) for text_equiv in segment.get_TextEquiv()
-                        ]
-
-                        try:
-                            language = segment.get_language()
-                            if not language:
-                                language = '-'
-                        except:
-                            language = '-'
-
-                        try:
-                            text_style = segment.get_TextStyle()
-
-                            try:
-                                font_family = text_style.get_fontFamily()
-                                if not font_family:
-                                    font_family = '-'
-                            except:
-                                font_family = '-'
-
-                            try:
-                                font_size = text_style.get_fontSize()
-                                if not font_size:
-                                    font_size = '-'
-                            except:
-                                font_size = '-'
-
-                            try:
-                                bold = text_style.get_bold()
-                                if not bold:
-                                    bold = '-'
-                            except:
-                                bold = '-'
-
-                            try:
-                                italic = text_style.get_italic()
-                                if not italic:
-                                    italic = '-'
-                            except:
-                                italic = '-'
-
-                            try:
-                                letter_spaced = text_style.get_letterSpaced()
-                                if not letter_spaced:
-                                    letter_spaced = '-'
-                            except:
-                                letter_spaced = '-'
-                        except:
-                            font_family = '-'
-                            font_size = '-'
-                            bold = '-'
-                            italic = '-'
-                            letter_spaced = '-'
-
-                        for text_equiv, conf in text_equivs:
-                            tsv.append(
-                                (
-                                    text_equiv,
-                                    # conf,
-                                    language,
-                                    font_family,
-                                    # font_size,
-                                    # bold,
-                                    # italic,
-                                    # letter_spaced,
-                                    segment_type,
-                                    segment_id,
-                                    url_id,
-                                    region,
-                                    rotation,
-                                    full_region,
-                                    full_rotation
-                                )
-                            )
-                    except:
-                        pass
-                else:
-                    tsv.append((segment_type, segment_id, url_id, region, rotation))
+                if purpose == 'page-rotation':
+                    #tsv.append((segment_type, segment_id, url_id, region, rotation))
+                    tsv.append((page_id, page_orientation, url_id))
 
     tsv = pd.DataFrame(tsv, columns=out_columns)
 
