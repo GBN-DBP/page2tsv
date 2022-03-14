@@ -11,8 +11,10 @@ import pandas as pd
 import requests
 from lxml import etree as ET
 from urllib.parse import quote
+# from urlparse import urlparse
 
 from ocrd_models.ocrd_mets import OcrdMets
+from ocrd_utils.str import nth_url_segment
 from ocrd_models.ocrd_page import parse
 from ocrd_modelfactory import page_from_file
 from ocrd_utils import bbox_from_points
@@ -66,6 +68,8 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 @click.argument('mets-file', type=click.Path(exists=True), required=True, nargs=1)
 @click.argument('tsv-out-file', type=click.Path(), required=True, nargs=1)
 @click.option('--file-grp', type=str, required=True)
+@click.option('--page-id', type=str, default=None)
+@click.option('--url-id', type=str, default=None)
 @click.option('--purpose', type=click.Choice(['page-rotation'], case_sensitive=False), default="page-rotation",
               help="Purpose of output tsv file. "
                    "\n\nNERD: NER/NED application/ground-truth creation. "
@@ -84,10 +88,10 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 @click.option('--min-confidence', type=float, default=None)
 @click.option('--max-confidence', type=float, default=None)
 @click.option('--ned-priority', type=int, default=1)
+@click.option('--page-orientation', type=float, default=None)
 # def page2tsv(page_xml_file, tsv_out_file, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
-def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
-             noproxy, scale_factor, ned_threshold, min_confidence, max_confidence, ned_priority, scheme, server,
-             prefix, segment_type):
+def page2tsv(mets_file, tsv_out_file, file_grp, page_id, url_id, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
+             noproxy, scale_factor, ned_threshold, min_confidence, max_confidence, ned_priority, page_orientation):
     if purpose == "page-rotation":
         out_columns = [
             'page_id', 'page_orientation', 'url_id'
@@ -104,15 +108,23 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
     urls = []
 
     # base_url = "scheme://server/prefix/identifier/region/size/rotation/quality.format"
-    base_url = "scheme://server/prefix/identifier"
+    # base_url = "scheme://server/prefix/identifier"
 
-    base_url = re.sub('scheme', scheme, base_url)
-    base_url = re.sub('server', server, base_url)
-
-    if prefix:
-        base_url = re.sub('prefix', prefix, base_url)
-    else:
-        base_url = re.sub('/prefix', '', base_url)
+    # http: // webdokumente.c3sl.ufpr.br / images / iiif / 2 / aufklaerung0 / info.json
+    # API = 'iiif', number = '2', pageID = 'aufklaerung0', output.format = 'info.json'
+    # base_url = "scheme://server/prefix/API/number/pageID/output.format"
+    #
+    # base_url = re.sub('scheme', scheme, base_url)
+    # base_url = re.sub('server', server, base_url)
+    #
+    # if prefix:
+    #     base_url = re.sub('prefix', prefix, base_url)
+    # else:
+    #     base_url = re.sub('/prefix', '', base_url)
+    #
+    # base_url = re.sub('API', API, base_url)
+    # base_url = re.sub('number', number, base_url)
+    # base_url = re.sub('output.format', output.format, base_url)
 
     mets = OcrdMets(filename=mets_file)
 
@@ -127,77 +139,91 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
         # pcgts = parse(page_xml_file)
         # page = pcgts.get_Page()
 
-        urls.append(re.sub('identifier', quote(page.get_imageFilename(), safe=''), base_url))
+        # urls.append(re.sub('identifier', quote(page.get_imageFilename(), safe=''), base_url))
+        # urls.append(re.sub('pageID', quote(page.get_imageFilename(), safe=''), base_url))
 
-        region = "full"
+
+        # http: // webdokumente.c3sl.ufpr.br / images / iiif / 2 / aufklaerung0 / info.json
+
+        urls.append(fl.url)
+
+        # picks up the section 'pageID'
+        # urlparse(url)
+        # urlparse(url).path
+        # urlparse(urls).path.split('/')[-2]
+
+        # region = "full"
         try:
-            rotation = page.get_orientation()
+            page_orientation = page.get_orientation()
         except:
-            rotation = 0.0
+            page_orientation = 0.0
 
+        # it gets the penult segment, which will indicate the page_id
+        # nth_url_segment(fl.url, -2)
         page_id = fl.pageId
         url_id = len(urls) - 1
 
-        if segment_type == 'Page':
-            rotation = str(rotation % 360)
+        #if segment_type == 'Page':
+            # rotation = str(rotation % 360)
+        page_orientation = str(page_orientation % 360)
 
-            if purpose == 'page-rotation':
-                tsv.append((page_id, page_orientation, url_id))
-        else:
-            segments = []
-
-            if 'Region' in segment_type:
-                for reg in page.get_AllRegions(classes=[re.sub('Region', '', segment_type)], order='reading-order'):
-                    try:
-                        region_rotation = rotation + reg.get_orientation()
-                    except:
-                        region_rotation = rotation
-                    segments.append((reg, region_rotation, page, rotation))
-            else:
-                regions = page.get_AllRegions(classes=['Text'], order='reading-order')
-                lines = []
-                for reg in regions:
-                    try:
-                        region_rotation = rotation + reg.get_orientation()
-                    except:
-                        region_rotation = rotation
-                    for line in reg.get_TextLine():
-                        try:
-                            line_rotation = region_rotation + line.get_orientation()
-                        except:
-                            line_rotation = region_rotation
-                        lines.append((line, line_rotation, reg, region_rotation))
-                if segment_type == 'TextLine':
-                    segments = lines
-                else:
-                    words = []
-                    for line, line_rotation, reg, region_rotation in lines:
-                        for word in line.get_Word():
-                            try:
-                                word_rotation = line_rotation + word.get_orientation()
-                            except:
-                                word_rotation = line_rotation
-                            words.append((word, word_rotation, reg, region_rotation))
-                    segments = words
-
-            for segment, rotation, full, full_rotation in segments:
-                coords = segment.get_Coords()
-                x0, y0, x1, y1 = bbox_from_points(coords.points)
-
-                region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
-                rotation = str(rotation % 360)
-
-                full_coords = full.get_Coords()
-                x0, y0, x1, y1 = bbox_from_points(full_coords.points)
-
-                full_region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
-                full_rotation = str(full_rotation % 360)
-
-                segment_id = page_id + '_' + segment.get_id()
-
-                if purpose == 'page-rotation':
-                    #tsv.append((segment_type, segment_id, url_id, region, rotation))
-                    tsv.append((page_id, page_orientation, url_id))
+        if purpose == 'page-rotation':
+            tsv.append((page_id, page_orientation, url_id))
+        # else:
+        #     segments = []
+        #
+        #     if 'Region' in segment_type:
+        #         for reg in page.get_AllRegions(classes=[re.sub('Region', '', segment_type)], order='reading-order'):
+        #             try:
+        #                 region_rotation = rotation + reg.get_orientation()
+        #             except:
+        #                 region_rotation = rotation
+        #             segments.append((reg, region_rotation, page, rotation))
+        #     else:
+        #         regions = page.get_AllRegions(classes=['Text'], order='reading-order')
+        #         lines = []
+        #         for reg in regions:
+        #             try:
+        #                 region_rotation = rotation + reg.get_orientation()
+        #             except:
+        #                 region_rotation = rotation
+        #             for line in reg.get_TextLine():
+        #                 try:
+        #                     line_rotation = region_rotation + line.get_orientation()
+        #                 except:
+        #                     line_rotation = region_rotation
+        #                 lines.append((line, line_rotation, reg, region_rotation))
+        #         if segment_type == 'TextLine':
+        #             segments = lines
+        #         else:
+        #             words = []
+        #             for line, line_rotation, reg, region_rotation in lines:
+        #                 for word in line.get_Word():
+        #                     try:
+        #                         word_rotation = line_rotation + word.get_orientation()
+        #                     except:
+        #                         word_rotation = line_rotation
+        #                     words.append((word, word_rotation, reg, region_rotation))
+        #             segments = words
+        #
+        #     for segment, rotation, full, full_rotation in segments:
+        #         coords = segment.get_Coords()
+        #         x0, y0, x1, y1 = bbox_from_points(coords.points)
+        #
+        #         region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
+        #         rotation = str(rotation % 360)
+        #
+        #         full_coords = full.get_Coords()
+        #         x0, y0, x1, y1 = bbox_from_points(full_coords.points)
+        #
+        #         full_region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
+        #         full_rotation = str(full_rotation % 360)
+        #
+        #         segment_id = page_id + '_' + segment.get_id()
+        #
+        #         if purpose == 'page-rotation':
+        #             #tsv.append((segment_type, segment_id, url_id, region, rotation))
+        #             tsv.append((page_id, page_orientation, url_id))
 
     tsv = pd.DataFrame(tsv, columns=out_columns)
 
@@ -205,7 +231,9 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
         return
 
     with open(tsv_out_file, 'a') as f:
+        f = tsv.writer(f, delimiter='\t', lineterminator='\n')
         # f.write('# ' + image_url + '\n')
+        f.write('page_id page_orientation url_id \n')
         for url in urls:
             f.write('# ' + url + '\n')
 
