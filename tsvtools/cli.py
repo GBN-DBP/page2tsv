@@ -135,9 +135,7 @@ def page2tsv(mets_file, tsv_out_file, file_grp, page_id, url_id, purpose, image_
         return
 
     with open(tsv_out_file, 'a') as f:
-        f = tsv.writer(f, delimiter='\t', lineterminator='\n')
-        # f.write('# ' + image_url + '\n')
-        f.write('page_id page_orientation url_id \n')
+        # it writes as a comment the urls before the columns
         for url in urls:
             f.write('# ' + url + '\n')
 
