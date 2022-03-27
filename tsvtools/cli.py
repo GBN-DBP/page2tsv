@@ -11,7 +11,6 @@ import pandas as pd
 import requests
 from lxml import etree as ET
 from urllib.parse import quote
-# from urlparse import urlparse
 
 from ocrd_models.ocrd_mets import OcrdMets
 from ocrd_utils.str import nth_url_segment
@@ -22,7 +21,7 @@ from ocrd_utils import bbox_from_points
 from .ned import ned
 from .ner import ner
 from .tsv import read_tsv, write_tsv, extract_doc_links
-from .ocr import get_conf_color
+# from .ocr import get_conf_color
 
 
 @click.command()
@@ -111,18 +110,26 @@ def page2tsv(mets_file, tsv_out_file, file_grp, page_id, url_id, purpose, image_
                                     mets.find_files(fileGrp='PAGE')):
         info = requests.get(info_file.url).json()
 
-        pcgts = page_from_file(page_file)
-        page = pcgts.get_Page()
-
+        # Get the URL
         urls.append(info['@id'])
 
+        # Assign the id of the url
+        url_id = len(urls) - 1
+
+        # Make a PcGtsType
+        pcgts = page_from_file(page_file)
+
+        ### From previous versions ###
+        # page = pcgts.get_Page()
+
+        # Get the ``@ID`` of the physical ``mets:structMap``
+        page_id = page_file.pageId
+
         try:
-            page_orientation = page.get_orientation()
+            # Use the method from PcGtsType to get the orientation
+            page_orientation = pcgts.get_orientation()
         except:
             page_orientation = 0.0
-
-        page_id = page.pageId
-        url_id = len(urls) - 1
 
         page_orientation = str(page_orientation % 360)
 
@@ -135,7 +142,7 @@ def page2tsv(mets_file, tsv_out_file, file_grp, page_id, url_id, purpose, image_
         return
 
     with open(tsv_out_file, 'a') as f:
-        # it writes as a comment the urls before the columns
+        # Write as a comment the urls before the columns
         for url in urls:
             f.write('# ' + url + '\n')
 
