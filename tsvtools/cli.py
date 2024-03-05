@@ -13,6 +13,7 @@ from lxml import etree as ET
 from urllib.parse import quote
 
 from ocrd_models.ocrd_mets import OcrdMets
+from ocrd_utils.str import nth_url_segment
 from ocrd_models.ocrd_page import parse
 from ocrd_modelfactory import page_from_file
 from ocrd_utils import bbox_from_points
@@ -20,14 +21,13 @@ from ocrd_utils import bbox_from_points
 from .ned import ned
 from .ner import ner
 from .tsv import read_tsv, write_tsv, extract_doc_links
-from .ocr import get_conf_color
+# from .ocr import get_conf_color
 
 
 @click.command()
 @click.argument('tsv-file', type=click.Path(exists=True), required=True, nargs=1)
 @click.argument('url-file', type=click.Path(exists=False), required=True, nargs=1)
 def extract_document_links(tsv_file, url_file):
-
     parts = extract_doc_links(tsv_file)
 
     urls = [part['url'] for part in parts]
@@ -41,13 +41,11 @@ def extract_document_links(tsv_file, url_file):
 @click.argument('tsv-file', type=click.Path(exists=True), required=True, nargs=1)
 @click.argument('annotated-tsv-file', type=click.Path(exists=False), required=True, nargs=1)
 def annotate_tsv(tsv_file, annotated_tsv_file):
-
     parts = extract_doc_links(tsv_file)
 
     annotated_parts = []
 
     for part in parts:
-
         part_data = StringIO(part['header'] + part['text'])
 
         df = pd.read_csv(part_data, sep="\t", comment='#', quoting=3)
@@ -66,7 +64,9 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 @click.argument('mets-file', type=click.Path(exists=True), required=True, nargs=1)
 @click.argument('tsv-out-file', type=click.Path(), required=True, nargs=1)
 @click.option('--file-grp', type=str, required=True)
-@click.option('--purpose', type=click.Choice(['fonts', 'skew'], case_sensitive=False), default="fonts",
+@click.option('--page-id', type=str, default=None)
+@click.option('--url-id', type=str, default=None)
+@click.option('--purpose', type=click.Choice(['page-rotation'], case_sensitive=False), default="page-rotation",
               help="Purpose of output tsv file. "
                    "\n\nNERD: NER/NED application/ground-truth creation. "
                    "\n\nOCR: OCR application/ground-truth creation. "
@@ -84,25 +84,15 @@ def annotate_tsv(tsv_file, annotated_tsv_file):
 @click.option('--min-confidence', type=float, default=None)
 @click.option('--max-confidence', type=float, default=None)
 @click.option('--ned-priority', type=int, default=1)
-@click.option('--scheme', type=str, default='http')
-@click.option('--server', type=str, required=True)
-@click.option('--prefix', type=str, default='')
-@click.option('--segment-type', type=str, default='Page')
+@click.option('--page-orientation', type=float, default=None)
 # def page2tsv(page_xml_file, tsv_out_file, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
-def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_endpoint, ned_rest_endpoint,
-             noproxy, scale_factor, ned_threshold, min_confidence, max_confidence, ned_priority, scheme, server,
-             prefix, segment_type):
-    if purpose == "fonts":
-        # out_columns = [
-        #     'text_equiv', 'conf', 'language', 'font_family', 'font_size', 'bold', 'italic', 'letter_spaced',
-        #     'segment_type', 'segment_id', 'url_id', 'region', 'rotation'
-        # ]
+def page2tsv(mets_file, tsv_out_file, file_grp, page_id, url_id, purpose, image_url, ner_rest_endpoint,
+             ned_rest_endpoint,
+             noproxy, scale_factor, ned_threshold, min_confidence, max_confidence, ned_priority, page_orientation):
+    if purpose == "page-rotation":
         out_columns = [
-            'text_equiv', 'language', 'font_family', 'segment_type', 'segment_id', 'url_id', 'region', 'rotation',
-            'full_region', 'full_rotation'
+            'page_id', 'page_orientation', 'url_id'
         ]
-    elif purpose == "skew":
-        out_columns = ['segment_type', 'segment_id', 'url_id', 'region', 'rotation']
     else:
         raise RuntimeError("Unknown purpose.")
 
@@ -114,179 +104,37 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
     tsv = []
     urls = []
 
-    # base_url = "scheme://server/prefix/identifier/region/size/rotation/quality.format"
-    base_url = "scheme://server/prefix/identifier"
-
-    base_url = re.sub('scheme', scheme, base_url)
-    base_url = re.sub('server', server, base_url)
-
-    if prefix:
-        base_url = re.sub('prefix', prefix, base_url)
-    else:
-        base_url = re.sub('/prefix', '', base_url)
-
     mets = OcrdMets(filename=mets_file)
 
-    basedir = Path(mets_file).parents[0]
+    for info_file, page_file in zip(mets.find_files(fileGrp='INFO'),
+                                    mets.find_files(fileGrp='PAGE')):
+        info = requests.get(info_file.url).json()
 
-    for fl in mets.find_files(fileGrp=file_grp):
-        fl.local_filename = str(basedir / Path(fl.local_filename))
+        # Get the URL
+        urls.append(info['@id'])
 
-        pcgts = page_from_file(fl)
-        page = pcgts.get_Page()
-
-        # pcgts = parse(page_xml_file)
-        # page = pcgts.get_Page()
-
-        urls.append(re.sub('identifier', quote(page.get_imageFilename(), safe=''), base_url))
-
-        region = "full"
-        try:
-            rotation = page.get_orientation()
-        except:
-            rotation = 0.0
-
-        page_id = fl.pageId
+        # Assign the id of the url
         url_id = len(urls) - 1
 
-        if segment_type == 'Page':
-            rotation = str(rotation % 360)
+        # Make a PcGtsType
+        pcgts = page_from_file(page_file)
 
-            if purpose == 'skew':
-                tsv.append((segment_type, page_id, url_id, region, rotation))
-        else:
-            segments = []
+        ### From previous versions ###
+        # page = pcgts.get_Page()
 
-            if 'Region' in segment_type:
-                for reg in page.get_AllRegions(classes=[re.sub('Region', '', segment_type)], order='reading-order'):
-                    try:
-                        region_rotation = rotation + reg.get_orientation()
-                    except:
-                        region_rotation = rotation
-                    segments.append((reg, region_rotation, page, rotation))
-            else:
-                regions = page.get_AllRegions(classes=['Text'], order='reading-order')
-                lines = []
-                for reg in regions:
-                    try:
-                        region_rotation = rotation + reg.get_orientation()
-                    except:
-                        region_rotation = rotation
-                    for line in reg.get_TextLine():
-                        try:
-                            line_rotation = region_rotation + line.get_orientation()
-                        except:
-                            line_rotation = region_rotation
-                        lines.append((line, line_rotation, reg, region_rotation))
-                if segment_type == 'TextLine':
-                    segments = lines
-                else:
-                    words = []
-                    for line, line_rotation, reg, region_rotation in lines:
-                        for word in line.get_Word():
-                            try:
-                                word_rotation = line_rotation + word.get_orientation()
-                            except:
-                                word_rotation = line_rotation
-                            words.append((word, word_rotation, reg, region_rotation))
-                    segments = words
+        # Get the ``@ID`` of the physical ``mets:structMap``
+        page_id = page_file.pageId
 
-            for segment, rotation, full, full_rotation in segments:
-                coords = segment.get_Coords()
-                x0, y0, x1, y1 = bbox_from_points(coords.points)
+        try:
+            # Use the method from PcGtsType to get the orientation
+            page_orientation = pcgts.get_orientation()
+        except:
+            page_orientation = 0.0
 
-                region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
-                rotation = str(rotation % 360)
+        page_orientation = str(page_orientation % 360)
 
-                full_coords = full.get_Coords()
-                x0, y0, x1, y1 = bbox_from_points(full_coords.points)
-
-                full_region = str(x0) + ',' + str(y0) + ',' + str(x1 - x0) + ',' + str(y1 - y0)
-                full_rotation = str(full_rotation % 360)
-
-                segment_id = page_id + '_' + segment.get_id()
-
-                if purpose == 'fonts':
-                    try:
-                        text_equivs = [
-                            (text_equiv.get_Unicode(), text_equiv.get_conf()) for text_equiv in segment.get_TextEquiv()
-                        ]
-
-                        try:
-                            language = segment.get_language()
-                            if not language:
-                                language = '-'
-                        except:
-                            language = '-'
-
-                        try:
-                            text_style = segment.get_TextStyle()
-
-                            try:
-                                font_family = text_style.get_fontFamily()
-                                if not font_family:
-                                    font_family = '-'
-                            except:
-                                font_family = '-'
-
-                            try:
-                                font_size = text_style.get_fontSize()
-                                if not font_size:
-                                    font_size = '-'
-                            except:
-                                font_size = '-'
-
-                            try:
-                                bold = text_style.get_bold()
-                                if not bold:
-                                    bold = '-'
-                            except:
-                                bold = '-'
-
-                            try:
-                                italic = text_style.get_italic()
-                                if not italic:
-                                    italic = '-'
-                            except:
-                                italic = '-'
-
-                            try:
-                                letter_spaced = text_style.get_letterSpaced()
-                                if not letter_spaced:
-                                    letter_spaced = '-'
-                            except:
-                                letter_spaced = '-'
-                        except:
-                            font_family = '-'
-                            font_size = '-'
-                            bold = '-'
-                            italic = '-'
-                            letter_spaced = '-'
-
-                        for text_equiv, conf in text_equivs:
-                            tsv.append(
-                                (
-                                    text_equiv,
-                                    # conf,
-                                    language,
-                                    font_family,
-                                    # font_size,
-                                    # bold,
-                                    # italic,
-                                    # letter_spaced,
-                                    segment_type,
-                                    segment_id,
-                                    url_id,
-                                    region,
-                                    rotation,
-                                    full_region,
-                                    full_rotation
-                                )
-                            )
-                    except:
-                        pass
-                else:
-                    tsv.append((segment_type, segment_id, url_id, region, rotation))
+        if purpose == 'page-rotation':
+            tsv.append((page_id, page_orientation, url_id))
 
     tsv = pd.DataFrame(tsv, columns=out_columns)
 
@@ -294,7 +142,7 @@ def page2tsv(mets_file, tsv_out_file, file_grp, purpose, image_url, ner_rest_end
         return
 
     with open(tsv_out_file, 'a') as f:
-        # f.write('# ' + image_url + '\n')
+        # Write as a comment the urls before the columns
         for url in urls:
             f.write('# ' + url + '\n')
 
@@ -341,7 +189,6 @@ def tsv2page(output_filename, keep_words, page_file, tsv_file):
 @click.option('--ned-priority', type=int, default=1)
 def find_entities(tsv_file, tsv_out_file, ner_rest_endpoint, ned_rest_endpoint, ned_json_file, noproxy, ned_threshold,
                   ned_priority):
-
     if noproxy:
         os.environ['no_proxy'] = '*'
 
@@ -371,7 +218,6 @@ def find_entities(tsv_file, tsv_out_file, ner_rest_endpoint, ned_rest_endpoint, 
                                   priority=ned_priority)
 
             if ned_json_file is not None and not os.path.exists(ned_json_file):
-
                 with open(ned_json_file, "w") as fp_json:
                     json.dump(ned_result, fp_json, indent=2, separators=(',', ': '))
 
@@ -416,4 +262,3 @@ def make_page2tsv_commands(xls_file, directory, purpose):
                       '--image-url=https://content.staatsbibliothek-berlin.de/dc/'
                       '{}-{:08d}/left,top,width,height/full/0/default.jpg --scale-factor=1.0 --purpose={}'.
                       format(file, ma.group(1), ma.group(2), int(ma.group(3)), purpose))
-
